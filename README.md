@@ -119,7 +119,7 @@ python3 scripts/train.py /path/to/HeLiMOS helimos /path/to/cache --config config
 by replacing the paths and the config file names. To evaluate for example on the Velodyne test data, run
 
 ```shell
-mapmos_pipeline /path/to/weights.ckpt /path/to/HeLiMOS --dataloader helimos -s Velodyne/test.txt
+mapmos_pipeline /path/to/weights.ckpt /path/to/HeLiMOS --dataloader helimos -s Velodyne/test.txt --config config/helimos/inference.yaml
 ```
 
 Note that our sequence `-s` encodes both the sensor type `Velodyne` and split `test.txt`, just replace these with `Ouster`, `Aeva`, or `Avia` and/or `train.txt` or `val.txt` to run MapMOS on different sensors and/or splits.
