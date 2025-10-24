@@ -1,0 +1,16 @@
+# config/live_m1p/inference.yaml
+
+odometry:
+  voxel_size: 0.5
+  max_points_per_voxel: 20
+  initial_threshold: 2.0
+  min_motion_th: 0.1
+
+
+mos:
+  voxel_size_mos: 0.1
+  delay_mos: 10
+  max_range_mos: 150.0
+  min_range_mos: -1.0
+  voxel_size_belief: 0.25
+  max_range_belief: 150

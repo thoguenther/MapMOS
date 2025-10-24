@@ -1,0 +1,38 @@
+general:
+  synchronous_mode: false
+  sim_interval: 0.05
+  no_carla: false
+
+map:
+  name: MonocabMap1
+  initial_position: [0, 80.0, 0]
+
+
+ip:
+  simulation: "localhost"
+  monocab: "localhost"
+  control_center: "localhost"
+
+
+camera_calibration:
+  Genie:
+    projection: perspective
+    K: [1835.951073442357, 0.0, 2140.953838313187, 0.0, 1826.1920919719037, 1526.8772508854538, 0.0, 0.0, 1.0]
+    D: [-0.14935877743929118, -0.5221155701863035, -0.0026697285212668406, -0.0008923181319509354, 1.7213936266267345]
+
+
+sensor_setup:
+  Genie:
+    type: camera
+    data_shape: [3008, 4112]
+    rate: 10
+    transform:
+      trans: [0.0, 0.0, 0.0]
+      euler: [0.0, 0.0, 0.0]
+  M1P:
+    type: flash_lidar
+    data_shape: [78750]
+    rate: 10
+    transform:
+      trans: [0.0, 0.0, -0.1]
+      euler: [0.0, 0.0, 0.0]

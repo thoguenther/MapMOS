@@ -1,0 +1,14 @@
+sensor_setup:
+  Genie:
+    kind: genie
+    resolution: [3008, 4112]
+    serial: H2825880
+    exposure: 10000
+    gain: 50
+    image_raw: false
+
+  M1P:
+    kind: robosense
+    type: RSM1
+    group_address: 0.0.0.0
+    host_address: 192.168.1.102

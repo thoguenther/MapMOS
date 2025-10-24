@@ -44,6 +44,10 @@ from mapmos.datasets import (
 )
 
 
+from mapmos.pipeline import MapMOSPipeline as Pipeline
+
+
+
 def name_callback(value: str):
     if not value:
         return value
@@ -84,6 +88,8 @@ $ mapmos_pipeline --dataloader kitti --sequence 07 --visualize <weights>:page_fa
 """
 
 
+
+
 @app.command(help=docstring)
 def mapmos_pipeline(
     weights: Path = typer.Argument(
@@ -91,19 +97,19 @@ def mapmos_pipeline(
         help="Path to the model's weights (.ckpt)",
         show_default=False,
     ),
-    data: Path = typer.Argument(
-        ...,
-        help="The data directory used by the specified dataloader",
-        show_default=False,
-    ),
-    dataloader: str = typer.Option(
-        None,
-        show_default=False,
-        case_sensitive=False,
-        autocompletion=available_dataloaders,
-        callback=name_callback,
-        help="[Optional] Use a specific dataloader from those supported by MapMOS",
-    ),
+    # data: Path = typer.Argument(
+    #     ...,
+    #     help="The data directory used by the specified dataloader",
+    #     show_default=False,
+    # ),
+    # dataloader: str = typer.Option(
+    #     None,
+    #     show_default=False,
+    #     case_sensitive=False,
+    #     autocompletion=available_dataloaders,
+    #     callback=name_callback,
+    #     help="[Optional] Use a specific dataloader from those supported by MapMOS",
+    # ),
     config: Optional[Path] = typer.Option(
         None,
         "--config",
@@ -119,22 +125,22 @@ def mapmos_pipeline(
         help="[Optional] Open an online visualization of the KISS-ICP pipeline",
         rich_help_panel="Additional Options",
     ),
-    sequence: Optional[str] = typer.Option(
-        None,
-        "--sequence",
-        "-s",
-        show_default=False,
-        help="[Optional] For some dataloaders, you need to specify a given sequence",
-        rich_help_panel="Additional Options",
-    ),
-    topic: Optional[str] = typer.Option(
-        None,
-        "--topic",
-        "-t",
-        show_default=False,
-        help="[Optional] Only valid when processing rosbag files",
-        rich_help_panel="Additional Options",
-    ),
+    # sequence: Optional[str] = typer.Option(
+    #     None,
+    #     "--sequence",
+    #     "-s",
+    #     show_default=False,
+    #     help="[Optional] For some dataloaders, you need to specify a given sequence",
+    #     rich_help_panel="Additional Options",
+    # ),
+    # topic: Optional[str] = typer.Option(
+    #     None,
+    #     "--topic",
+    #     "-t",
+    #     show_default=False,
+    #     help="[Optional] Only valid when processing rosbag files",
+    #     rich_help_panel="Additional Options",
+    # ),
     save_ply: bool = typer.Option(
         False,
         "--save_ply",
@@ -157,68 +163,83 @@ def mapmos_pipeline(
         help="[Optional] Specify the number of scans to process, default is the entire dataset",
         rich_help_panel="Additional Options",
     ),
-    jump: int = typer.Option(
-        0,
-        "--jump",
-        "-j",
-        show_default=False,
-        help="[Optional] Specify if you want to start to process scans from a given starting point",
-        rich_help_panel="Additional Options",
-    ),
-    meta: Optional[Path] = typer.Option(
-        None,
-        "--meta",
-        "-m",
-        exists=True,
-        show_default=False,
-        help="[Optional] For Ouster pcap dataloader, specify metadata json file path explicitly",
-        rich_help_panel="Additional Options",
-    ),
-    paper: bool = typer.Option(
-        False,
-        "--paper",
-        "-paper",
-        help="[Optional] Use this to compare different belief fusion strategies as done in the original paper",
-        rich_help_panel="Additional Options",
-    ),
+    # jump: int = typer.Option(
+    #     0,
+    #     "--jump",
+    #     "-j",
+    #     show_default=False,
+    #     help="[Optional] Specify if you want to start to process scans from a given starting point",
+    #     rich_help_panel="Additional Options",
+    # ),
+    # meta: Optional[Path] = typer.Option(
+    #     None,
+    #     "--meta",
+    #     "-m",
+    #     exists=True,
+    #     show_default=False,
+    #     help="[Optional] For Ouster pcap dataloader, specify metadata json file path explicitly",
+    #     rich_help_panel="Additional Options",
+    # ),
+    # paper: bool = typer.Option(
+    #     False,
+    #     "--paper",
+    #     "-paper",
+    #     help="[Optional] Use this to compare different belief fusion strategies as done in the original paper",
+    #     rich_help_panel="Additional Options",
+    # ),
+    # config_dir_live: Optional[str] = typer.Option(
+    #     None,
+    #     "--config_dir_live",
+    #     "-cdl",
+    #     show_default="/home/tguenther/repos/MapMOS/src/mapmos/live_m1p/config",
+    #     help="[Optional] The path to the config directory",
+    #     rich_help_panel="Additional Options",
+    # ),
 ):
-    # Attempt to guess some common file extensions to avoid using the --dataloader flag
-    if not dataloader:
-        dataloader, data = guess_dataloader(data, default_dataloader="generic")
 
-    # Validate some options
-    if dataloader in sequence_dataloaders() and sequence is None:
-        print('You must specify a sequence "--sequence"')
-        raise typer.Exit(code=1)
+    # # Attempt to guess some common file extensions to avoid using the --dataloader flag
+    # if not dataloader:
+    #     dataloader, data = guess_dataloader(data, default_dataloader="generic")
 
-    if jump != 0 and dataloader not in jumpable_dataloaders():
-        print(f"[WARNING] '{dataloader}' does not support '--jump', starting from first frame")
-        jump = 0
-    # Lazy-loading for faster CLI
-    from mapmos.datasets import dataset_factory
+    # # Validate some options
+    # if dataloader in sequence_dataloaders() and sequence is None:
+    #     print('You must specify a sequence "--sequence"')
+    #     raise typer.Exit(code=1)
 
-    if paper:
-        from mapmos.paper_pipeline import PaperPipeline as Pipeline
-    else:
-        from mapmos.pipeline import MapMOSPipeline as Pipeline
+    # if jump != 0 and dataloader not in jumpable_dataloaders():
+    #     print(f"[WARNING] '{dataloader}' does not support '--jump', starting from first frame")
+    #     jump = 0
+    
+    # # Lazy-loading for faster CLI
+    # from mapmos.datasets import dataset_factory
 
+    # if paper:
+    #     from mapmos.paper_pipeline import PaperPipeline as Pipeline
+    # else:
+    #     from mapmos.pipeline import MapMOSPipeline as Pipeline
+
+    # Lidar_pipeline()
     Pipeline(
-        dataset=dataset_factory(
-            dataloader=dataloader,
-            data_dir=data,
-            # Additional options
-            sequence=sequence,
-            topic=topic,
-            meta=meta,
-        ),
+        # dataset=dataset_factory(
+        #     dataloader=dataloader,
+        #     data_dir=data,
+        #     # Additional options
+        #     sequence=sequence,
+        #     topic=topic,
+        #     meta=meta,
+        # ),
         weights=weights,
         config=config,
         visualize=visualize,
         save_ply=save_ply,
         save_kitti=save_kitti,
-        n_scans=n_scans,
-        jump=jump,
+        # n_scans=n_scans,
+        # jump=jump,
     ).run().print()
+
+    
+
+
 
 
 def run():

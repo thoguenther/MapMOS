@@ -22,6 +22,7 @@
 # SOFTWARE.
 from pathlib import Path
 from typing import Dict, List
+# from .live_eato import LiveEatoDataset as live_eato
 
 
 def supported_file_extensions():
@@ -44,7 +45,7 @@ def sequence_dataloaders():
         "kitti_tracking",
         "nuscenes",
         "apollo",
-        "helimos",
+        "helimos"
     ]
 
 
