@@ -409,63 +409,126 @@ class MapMOSPipeline:
                 print(f"⚠️ producer error: {e}", file=sys.stderr)
                 shutdown_event.set()  # globale Beendigung anstoßen
 
-        async def consumer():
-            print("[consumer] start", flush=True)
-            # sauber getaktete Schleife mit Monotonic-Clock (kein Drift)
-            period = 1.0 / max(1.0, 1e-6)
-            loop = asyncio.get_running_loop()
-            next_t = loop.time()
-            while not shutdown_event.is_set():
-                # Nimm einfach das aktuellste Frame, wenn vorhanden
-                frame = latest_ref.get("frame")
-                if frame is not None:
-                    # >>> Hier dein Processing <<<
-                    # z. B.: self.process_frame(frame)
-                    print("Neues Frame verarbeitet!")
-
-                # Takt einhalten
-                next_t += period
-                await asyncio.sleep(max(0.0, next_t - loop.time()))
-                
-
-        try:
-            try:
-                prod_task = asyncio.create_task(producer(), name="producer")
-                cons_task = asyncio.create_task(consumer(), name="consumer")
-                await shutdown_event.wait()
-                for t in (prod_task, cons_task):
-                    t.cancel()
-                # gather, damit CancelledError konsumiert wird
-                try:
-                    await asyncio.gather(prod_task, cons_task)
-                except asyncio.CancelledError:
-                    pass
-            finally:
-                # Client sauber schließen, falls nötig
-                close = getattr(client, "close", None)
-                if callable(close):
-                    try:
-                        await asyncio.to_thread(close)
-                    except Exception as e:
-                        print(f"⚠️ client close error: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"⚠️ pipeline error: {e}", file=sys.stderr)
-            raise
 
 
         # async def consumer():
-        #     nonlocal latest_frame, processed
-        #     # optional: Fortschrittsanzeige wie bisher
-        #     pbar_iter = range(self.n_scans) if self.n_scans and self.n_scans > 0 else iter(int, 1)
-        #     iterator = trange(self.n_scans, unit=" frames", dynamic_ncols=True) if isinstance(pbar_iter, range) else pbar_iter
+        #     print("[consumer] start", flush=True)
+        #     # sauber getaktete Schleife mit Monotonic-Clock (kein Drift)
+        #     period = 1.0 / max(1.0, 1e-6)
+        #     loop = asyncio.get_running_loop()
+        #     next_t = loop.time()
+        #     while not shutdown_event.is_set():
+        #         # Nimm einfach das aktuellste Frame, wenn vorhanden
+        #         frame = latest_ref.get("frame")
+        #         if frame is not None:
+        #             # >>> Hier dein Processing <<<
+        #             # z. B.: self.process_frame(frame)
+        #             print("Neues Frame verarbeitet!")
 
-        #     try:
-        #         for _ in iterator:
-        #             if shutdown_event.is_set():
-        #                 break
+        #         # Takt einhalten
+        #         next_t += period
+        #         await asyncio.sleep(max(0.0, next_t - loop.time()))
+                
 
-        #             ## Aktuellen Schnappschuss holen; keine Versionierung
-        #             frame = latest_frame
+
+        async def consumer():
+            # optional: Fortschrittsanzeige wie bisher
+            print("[consumer] start", flush=True)            
+            pbar_iter = range(self.n_scans) if self.n_scans and self.n_scans > 0 else iter(int, 1)
+            iterator = trange(self.n_scans, unit=" frames", dynamic_ncols=True) if isinstance(pbar_iter, range) else pbar_iter
+
+            try:
+                while not shutdown_event.is_set():
+
+                    # sauber getaktete Schleife mit Monotonic-Clock (kein Drift)
+                    ## Aktuellen Schnappschuss holen; keine Versionierung
+                    frame = latest_ref.get("frame")
+                    if frame is not None:
+                        # >>> Hier dein Processing <<<
+                        # z. B.: self.process_frame(frame)
+                        print("Neues Frame verarbeitet!")
+                        pts_xyz = frame.numpy()[:, :3]
+                        finite_mask = np.isfinite(pts_xyz).all(axis=1)
+                        pts_xyz = np.ascontiguousarray(pts_xyz[finite_mask], dtype=np.float64)
+                        if pts_xyz.shape[0] == 0:
+                            continue
+                        timestamps = np.zeros((pts_xyz.shape[0],), dtype=np.float64)
+
+                        t0 = time.perf_counter()
+
+                        # Map / Odometry
+                        map_points, map_indices = self.odometry.get_map_points()
+                        scan_points = self.odometry.register_points(pts_xyz, timestamps, processed)
+
+                        # Pre-Filter
+                        min_r = self.config.mos.min_range_mos
+                        max_r = self.config.mos.max_range_mos
+
+                        scan_mask = self._preprocess(scan_points, min_r, max_r)
+                        scan_points = torch.tensor(scan_points[scan_mask], dtype=torch.float32, device="cuda")
+                        gt_labels = (-1 * np.ones((scan_mask.sum(),), dtype=np.int32))
+
+                        map_mask = self._preprocess(map_points, min_r, max_r)
+                        map_points = torch.tensor(map_points[map_mask], dtype=torch.float32, device="cuda")
+                        map_indices = torch.tensor(map_indices[map_mask], dtype=torch.float32, device="cuda")
+
+                        # MOS (GPU)
+                        torch.cuda.synchronize()
+                        pred_logits_scan, pred_logits_map = self.model.predict(
+                            scan_points,
+                            map_points,
+                            processed * torch.ones(len(scan_points)).type_as(scan_points),
+                            map_indices,
+                        )
+                        torch.cuda.synchronize()
+                        t2 = time.perf_counter()
+                        self.times_mos.append(t2 - t0)
+
+                        # To CPU/NumPy
+                        pred_logits_scan = pred_logits_scan.detach().cpu().numpy().astype(np.float64)
+                        pred_logits_map  = pred_logits_map.detach().cpu().numpy().astype(np.float64)
+                        scan_points_np   = scan_points.cpu().numpy().astype(np.float64)
+                        map_points_np    = map_points.cpu().numpy().astype(np.float64)
+
+                        pred_labels_scan = self.model.to_label(pred_logits_scan)
+                        pred_labels_map  = self.model.to_label(pred_logits_map)                        
+
+                        # Belief
+                        map_mask_belief  = np.logical_and(pred_logits_map > 0,
+                                            self._preprocess(map_points_np, 0.0, self.config.mos.max_range_belief))
+                        scan_mask_belief = self._preprocess(scan_points_np, 0.0, self.config.mos.max_range_belief)
+                        points_stacked   = np.vstack([scan_points_np[scan_mask_belief], map_points_np[map_mask_belief]])
+                        logits_stacked   = np.vstack([pred_logits_scan[scan_mask_belief].reshape(-1,1),
+                                                    pred_logits_map[map_mask_belief].reshape(-1,1)]).reshape(-1)
+                        t3 = time.perf_counter()
+                        self.belief.update_belief(points_stacked, logits_stacked)
+                        self.belief.get_belief(scan_points_np)
+                        t4 = time.perf_counter()
+                        self.times_belief.append(t4 - t0)
+
+                        # Visualisierung (nicht blockierend arbeiten lassen)
+                        # self.visualizer.update(
+                        #     scan_points_np,
+                        #     map_points_np,
+                        #     pred_labels_scan,
+                        #     pred_labels_map,
+                        #     self.belief,
+                        #     self.odometry.last_pose,
+                        # )                        
+                        rendered = self.visualizer.update(
+                            scan_points_np,
+                            map_points_np,
+                            pred_labels_scan,
+                            pred_labels_map,
+                            self.belief,
+                            self.odometry.last_pose,
+                        )
+
+                        if not rendered:
+                            # pausiert → schweres „Delayed Finalize“ überspringen (optional)
+                            pass
+                    # Takt einhalten
+                    await asyncio.sleep(0.0001)
         #             if frame is None:
         #                 await asyncio.sleep(0)  # nichts da → sofort weiter
         #                 continue
@@ -540,15 +603,15 @@ class MapMOSPipeline:
         #                 self.odometry.last_pose,
         #             )
 
-        #             # Delay-Buffer & optionales Finalize nur, wenn gerendert / „aktiv“
-        #             # if rendered:
-        #             #     self.buffer.append([processed, scan_points_np, gt_labels])
-        #             #     if len(self.buffer) == self.buffer.maxlen:
-        #             #         q_idx, q_pts, q_lbl = self.buffer.popleft()
-        #             #         task = asyncio.create_task(
-        #             #             asyncio.to_thread(self._finalize_prediction, q_idx, q_pts, q_lbl)
-        #             #         )
-        #             #         pending_tasks.append((task, time.monotonic()))
+        # #             # Delay-Buffer & optionales Finalize nur, wenn gerendert / „aktiv“
+        # #             # if rendered:
+        # #             #     self.buffer.append([processed, scan_points_np, gt_labels])
+        # #             #     if len(self.buffer) == self.buffer.maxlen:
+        # #             #         q_idx, q_pts, q_lbl = self.buffer.popleft()
+        # #             #         task = asyncio.create_task(
+        # #             #             asyncio.to_thread(self._finalize_prediction, q_idx, q_pts, q_lbl)
+        # #             #         )
+        # #             #         pending_tasks.append((task, time.monotonic()))
 
         #             # Housekeeping
         #             self.belief.remove_voxels_far_from_location(self.odometry.current_location())
@@ -581,9 +644,9 @@ class MapMOSPipeline:
         #                     remaining.append((t, created))
         #             pending_tasks = remaining
 
-        #     except Exception as e:
-        #         print(f"⚠️ consumer error: {e}", file=sys.stderr)
-        #         shutdown_event.set()
+            except Exception as e:
+                print(f"⚠️ consumer error: {e}", file=sys.stderr)
+                shutdown_event.set()
 
         # --- Start / Shutdown orchestration ---
 
@@ -606,23 +669,31 @@ class MapMOSPipeline:
 
 
 
+        try:
+            try:
+                prod_task = asyncio.create_task(producer(), name="producer")
+                cons_task = asyncio.create_task(consumer(), name="consumer")
+                await shutdown_event.wait()
+                for t in (prod_task, cons_task):
+                    t.cancel()
+                # gather, damit CancelledError konsumiert wird
+                try:
+                    await asyncio.gather(prod_task, cons_task)
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                # Client sauber schließen, falls nötig
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        await asyncio.to_thread(close)
+                    except Exception as e:
+                        print(f"⚠️ client close error: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠️ pipeline error: {e}", file=sys.stderr)
+            raise
 
-            # # Queue leeren (drain), damit producer/consumer sauber aussteigen
-            # try:
-            #     while not queue.empty():
-            #         try:
-            #             _ = queue.get_nowait()
-            #             queue.task_done()
-            #         except asyncio.QueueEmpty:
-            #             break
-            # except Exception:
-            #     pass
 
-            # # Restliche Delay-Frames finalisieren
-            # while len(self.buffer) != 0:
-            #     q_idx, q_pts, q_lbl = self.buffer.popleft()
-            #     t = asyncio.create_task(asyncio.to_thread(self._finalize_prediction, q_idx, q_pts, q_lbl))
-            #     pending_tasks.append((t, time.monotonic()))
 
             # final_tasks = [t for t, _ in pending_tasks if not t.done()]
             # if final_tasks:

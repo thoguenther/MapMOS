@@ -83,6 +83,15 @@ class StubVisualizer(ABC):
     def __init__(self):
         pass
 
+    # def update(
+    #     self,
+    #     scan_points,
+    #     map_points,
+    #     pred_labels_scan,
+    #     pred_labels_map,
+    #     belief_map,
+    #     pose,
+    # ):
     def update(
         self,
         scan_points,
@@ -91,7 +100,7 @@ class StubVisualizer(ABC):
         pred_labels_map,
         belief_map,
         pose,
-    ):
+    ) -> bool:
         pass
 
     def set_voxel_size(self, voxel_size):
@@ -120,10 +129,35 @@ class MapMOSVisualizer(StubVisualizer):
         self._global_view = False
         self._last_pose = np.eye(4)
         self._voxel_size = 1.0
+        self._step_once = False
 
         # Initialize Visualizer
         self._initialize_visualizer()
 
+    # def update(
+    #     self,
+    #     scan_points,
+    #     map_points,
+    #     pred_labels_scan,
+    #     pred_labels_map,
+    #     belief_map,
+    #     pose,
+    # ):
+    #     self._update_geometries(
+    #         scan_points,
+    #         map_points,
+    #         pred_labels_scan,
+    #         pred_labels_map,
+    #         belief_map,
+    #         pose,
+    #     )
+    #     while self._block_execution:
+    #         self._ps.frame_tick()
+    #         if self._play_mode:
+    #             break
+    #     self._block_execution = not self._block_execution
+
+    # ersetze update(...) komplett:
     def update(
         self,
         scan_points,
@@ -132,20 +166,27 @@ class MapMOSVisualizer(StubVisualizer):
         pred_labels_map,
         belief_map,
         pose,
-    ):
-        self._update_geometries(
-            scan_points,
-            map_points,
-            pred_labels_scan,
-            pred_labels_map,
-            belief_map,
-            pose,
-        )
-        while self._block_execution:
-            self._ps.frame_tick()
-            if self._play_mode:
-                break
-        self._block_execution = not self._block_execution
+    ) -> bool:
+        """Nicht-blockierende Aktualisierung. Gibt True zurück, wenn gerendert wurde."""
+        # immer GUI pumpen, aber nur EIN Tick
+        self._ps.frame_tick()
+
+        # nur bei Play oder „Step einmal“ rendern
+        if self._play_mode or self._step_once:
+            self._update_geometries(
+                scan_points,
+                map_points,
+                pred_labels_scan,
+                pred_labels_map,
+                belief_map,
+                pose,
+            )
+            self._step_once = False
+            return True
+
+        # pausiert: nichts rendern
+        return False
+
 
     def set_voxel_size(self, voxel_size):
         self._voxel_size = voxel_size
@@ -248,9 +289,13 @@ class MapMOSVisualizer(StubVisualizer):
             else:
                 self._ps.set_SSAA_factor(4)
 
+    # def _next_frame_callback(self):
+    #     if self._gui.Button(NEXT_FRAME_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_N):
+    #         self._block_execution = not self._block_execution
     def _next_frame_callback(self):
         if self._gui.Button(NEXT_FRAME_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_N):
-            self._block_execution = not self._block_execution
+            self._step_once = True  # <— statt _block_execution toggeln
+
 
     def _screenshot_callback(self):
         if self._gui.Button(SCREENSHOT_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_S):
