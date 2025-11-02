@@ -434,8 +434,9 @@ class MapMOSPipeline:
         async def consumer():
             # optional: Fortschrittsanzeige wie bisher
             print("[consumer] start", flush=True)            
-            pbar_iter = range(self.n_scans) if self.n_scans and self.n_scans > 0 else iter(int, 1)
-            iterator = trange(self.n_scans, unit=" frames", dynamic_ncols=True) if isinstance(pbar_iter, range) else pbar_iter
+            # pbar_iter = range(self.n_scans) if self.n_scans and self.n_scans > 0 else iter(int, 1)
+            # iterator = trange(self.n_scans, unit=" frames", dynamic_ncols=True) if isinstance(pbar_iter, range) else pbar_iter
+            pts_xyz = np.zeros((78750, 3))
 
             try:
                 while not shutdown_event.is_set():
@@ -446,8 +447,10 @@ class MapMOSPipeline:
                     if frame is not None:
                         # >>> Hier dein Processing <<<
                         # z. B.: self.process_frame(frame)
-                        print("Neues Frame verarbeitet!")
+                        pts_xyz_old = pts_xyz
                         pts_xyz = frame.numpy()[:, :3]
+                        if np.array_equal(pts_xyz, pts_xyz_old):
+                            continue
                         finite_mask = np.isfinite(pts_xyz).all(axis=1)
                         pts_xyz = np.ascontiguousarray(pts_xyz[finite_mask], dtype=np.float64)
                         if pts_xyz.shape[0] == 0:
@@ -515,6 +518,7 @@ class MapMOSPipeline:
                         #     self.belief,
                         #     self.odometry.last_pose,
                         # )                        
+                        # print("Neues Frame verarbeitet!")
                         rendered = self.visualizer.update(
                             scan_points_np,
                             map_points_np,
@@ -647,27 +651,6 @@ class MapMOSPipeline:
             except Exception as e:
                 print(f"⚠️ consumer error: {e}", file=sys.stderr)
                 shutdown_event.set()
-
-        # --- Start / Shutdown orchestration ---
-
-        
-
-
-            # prod_task = asyncio.create_task(producer())
-            # prod_task
-            # # cons_task = asyncio.create_task(consumer())
-
-            # # await cons_task  # bis Ende (n_scans erreicht oder Shutdown)
-            # await prod_task
-        # finally:
-        #     print("ℹ️ Shutting down live pipeline...")
-        #     try:
-        #         if client:
-        #             client.close()
-        #     except Exception as e:
-        #         print(f"⚠️ error closing client: {e}", file=sys.stderr)
-
-
 
         try:
             try:
