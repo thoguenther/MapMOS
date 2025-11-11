@@ -9,7 +9,7 @@ from eato_base import EATONode, EATOTopics, ConfigLoader
 
 # Lazy imports, wie in cli.py
 from mapmos.datasets import dataset_factory
-from mapmos.pipeline import MapMOSPipeline as Pipeline
+from mapmos.pipeline_live import MapMOSPipeline as Pipeline
 
 
 def _env_path(name: str) -> Optional[Path]:

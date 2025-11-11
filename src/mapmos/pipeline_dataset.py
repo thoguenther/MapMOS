@@ -20,20 +20,28 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import torch
+from kiss_icp.pipeline import OdometryPipeline
 from tqdm.auto import trange
 
+from mapmos.config import load_config
+from mapmos.mapmos_net import MapMOSNet
 from mapmos.mapping import VoxelHashMap
 from mapmos.metrics import get_confusion_matrix
-from mapmos.pipeline_live import MapMOSPipeline
+from mapmos.odometry import Odometry
+from mapmos.utils.pipeline_results import MOSPipelineResults
+from mapmos.utils.save import KITTIWriter, PlyWriter, StubWriter
+from mapmos.utils.visualizer_dataset import MapMOSVisualizer, StubVisualizer
 
 
-class PaperPipeline(MapMOSPipeline):
+class MapMOSPipeline(OdometryPipeline):
     def __init__(
         self,
         dataset,
@@ -45,26 +53,72 @@ class PaperPipeline(MapMOSPipeline):
         n_scans: int = -1,
         jump: int = 0,
     ):
-        super().__init__(
-            dataset=dataset,
-            weights=weights,
-            config=config,
-            visualize=visualize,
-            save_ply=save_ply,
-            save_kitti=save_kitti,
-            n_scans=n_scans,
-            jump=jump,
+        self._dataset = dataset
+        self._n_scans = (
+            len(self._dataset) - jump if n_scans == -1 else min(len(self._dataset) - jump, n_scans)
         )
-        self.belief_scan_only = VoxelHashMap(
+        self._first = jump
+        self._last = self._first + self._n_scans
+
+        # Config and output dir
+        self.config = load_config(config)
+        self.results_dir = None
+
+        # Pipeline
+        state_dict = {
+            k.replace("mos.", ""): v for k, v in torch.load(weights)["state_dict"].items()
+        }
+        self.model = MapMOSNet(self.config.mos.voxel_size_mos)
+
+        self.model.load_state_dict(state_dict)
+        self.model.cuda().eval().freeze()
+
+        self.odometry = Odometry(self.config.data, self.config.odometry)
+        self.belief = VoxelHashMap(
             voxel_size=self.config.mos.voxel_size_belief,
             max_distance=self.config.mos.max_range_belief,
         )
+        self.buffer = deque(maxlen=self.config.mos.delay_mos)
 
-        self.times_belief_scan_only = []
+        # Results
+        self.results = MOSPipelineResults()
+        self.poses = np.zeros((self._n_scans, 4, 4))
+        self.has_gt = hasattr(self._dataset, "gt_poses")
+        self.gt_poses = self._dataset.gt_poses[self._first : self._last] if self.has_gt else None
+        self.dataset_name = self._dataset.__class__.__name__
+        self.dataset_sequence = (
+            self._dataset.sequence_id
+            if hasattr(self._dataset, "sequence_id")
+            else os.path.basename(self._dataset.data_dir)
+        )
+        self.times_mos = []
+        self.times_belief = []
+        self.confusion_matrix_belief = torch.zeros(2, 2)
 
-        self.confusion_matrix_mos = torch.zeros(2, 2)
-        self.confusion_matrix_belief_scan_only = torch.zeros(2, 2)
-        self.confusion_matrix_belief_no_delay = torch.zeros(2, 2)
+        # Visualizer
+        self.visualize = visualize
+        self.visualizer = MapMOSVisualizer() if visualize else StubVisualizer()
+        self.visualizer.set_voxel_size(self.config.mos.voxel_size_belief)
+        self.ply_writer = PlyWriter() if save_ply else StubWriter()
+        self.kitti_writer = KITTIWriter() if save_kitti else StubWriter()
+
+    # Public interface  ------
+    def run(self):
+        self._create_output_dir()
+        with torch.no_grad():
+            self._run_pipeline()
+        self._run_evaluation()
+        self._write_result_poses()
+        self._write_gt_poses()
+        self._write_cfg()
+        self._write_log()
+        return self.results
+
+    def _preprocess(self, points, min_range, max_range):
+        ranges = np.linalg.norm(points - self.odometry.current_location(), axis=1)
+        mask = ranges <= max_range if max_range > 0 else np.ones_like(ranges, dtype=bool)
+        mask = np.logical_and(mask, ranges >= min_range)
+        return mask
 
     # Private interface  ------
     def _run_pipeline(self):
@@ -105,32 +159,6 @@ class PaperPipeline(MapMOSPipeline):
             pred_labels_scan = self.model.to_label(pred_logits_scan)
             pred_labels_map = self.model.to_label(pred_logits_map)
 
-            pred_labels_scan = (
-                np.zeros_like(pred_logits_scan)
-                if len(map_points) == 0
-                else self.model.to_label(pred_logits_scan)
-            )
-            self.confusion_matrix_mos += get_confusion_matrix(
-                torch.tensor(pred_labels_scan, dtype=torch.int32),
-                torch.tensor(gt_labels, dtype=torch.int32),
-            )
-
-            # Probabilistic volumetric fusion with scan prediction only
-            scan_mask_belief = self._preprocess(scan_points, 0.0, self.config.mos.max_range_belief)
-            start_time = time.perf_counter_ns()
-            self.belief_scan_only.update_belief(
-                scan_points[scan_mask_belief], pred_logits_scan[scan_mask_belief]
-            )
-            belief = self.belief_scan_only.get_belief(scan_points)
-            self.times_belief_scan_only.append(time.perf_counter_ns() - start_time)
-            belief_labels = (
-                np.zeros_like(belief) if len(map_points) == 0 else self.model.to_label(belief)
-            )
-            self.confusion_matrix_belief_scan_only += get_confusion_matrix(
-                torch.tensor(belief_labels, dtype=torch.int32),
-                torch.tensor(gt_labels, dtype=torch.int32),
-            )
-
             # Probabilistic Volumetric Fusion of predictions within the belief range
             map_mask_belief = pred_logits_map > 0
             map_mask_belief = np.logical_and(
@@ -147,19 +175,8 @@ class PaperPipeline(MapMOSPipeline):
 
             start_time = time.perf_counter_ns()
             self.belief.update_belief(points_stacked, logits_stacked)
-            belief_with_map = self.belief.get_belief(scan_points)
+            self.belief.get_belief(scan_points)
             self.times_belief.append(time.perf_counter_ns() - start_time)
-            belief_labels_with_map = (
-                np.zeros_like(belief_with_map)
-                if len(map_points) == 0
-                else self.model.to_label(belief_with_map)
-            )
-
-            self.confusion_matrix_belief_no_delay += get_confusion_matrix(
-                torch.tensor(belief_labels_with_map, dtype=torch.int32),
-                torch.tensor(gt_labels, dtype=torch.int32),
-            )
-
             self.visualizer.update(
                 scan_points,
                 map_points,
@@ -169,14 +186,13 @@ class PaperPipeline(MapMOSPipeline):
                 self.odometry.last_pose,
             )
 
-            # Probabilistic volumetric fusion with scan and moving map predictions and delay
+            # Evaluate and save with delay
             self.buffer.append([scan_index, scan_points, gt_labels])
             if len(self.buffer) == self.buffer.maxlen:
                 query_index, query_points, query_labels = self.buffer.popleft()
                 self.process_final_prediction(query_index, query_points, query_labels)
 
             # Clean up
-            self.belief_scan_only.remove_voxels_far_from_location(self.odometry.current_location())
             self.belief.remove_voxels_far_from_location(self.odometry.current_location())
 
         # Clear buffer at the end
@@ -184,18 +200,42 @@ class PaperPipeline(MapMOSPipeline):
             query_index, query_points, query_labels = self.buffer.popleft()
             self.process_final_prediction(query_index, query_points, query_labels)
 
+    def process_final_prediction(self, query_index, query_points, query_labels):
+        belief_query = self.belief.get_belief(query_points)
+        belief_labels_query = self.model.to_label(belief_query)
+        print(query_points[belief_labels_query == 1])
+        self.confusion_matrix_belief += get_confusion_matrix(
+            torch.tensor(belief_labels_query, dtype=torch.int32),
+            torch.tensor(query_labels, dtype=torch.int32),
+        )
+        self.ply_writer.write(
+            query_points,
+            belief_labels_query,
+            query_labels,
+            filename=f"{self.results_dir}/ply/{query_index:06}.ply",
+        )
+        self.kitti_writer.write(
+            belief_labels_query,
+            filename=f"{self.results_dir}/bin/sequences/{self.dataset_sequence}/predictions/{query_index:06}.label",
+        )
+
+    def _next(self, idx):
+        dataframe = self._dataset[idx]
+        try:
+            local_scan, timestamps, gt_labels = dataframe
+        except ValueError:
+            try:
+                local_scan, timestamps = dataframe
+                gt_labels = -1 * np.ones(local_scan.shape[0])
+            except ValueError:
+                local_scan = dataframe
+                gt_labels = -1 * np.ones(local_scan.shape[0])
+                timestamps = np.zeros(local_scan.shape[0])
+        return local_scan.reshape(-1, 3), timestamps.reshape(-1), gt_labels.reshape(-1)
+
     def _run_evaluation(self):
         if self.has_gt:
             self.results.eval_odometry(self.poses, self.gt_poses)
-        self.results.eval_mos(self.confusion_matrix_mos, desc="\nScan Prediction")
+        self.results.eval_mos(self.confusion_matrix_belief, desc="\nBelief")
         self.results.eval_fps(self.times_mos, desc="Average Frequency MOS")
-        self.results.eval_mos(self.confusion_matrix_belief_scan_only, desc="\nBelief, Scan Only")
-        self.results.eval_fps(
-            self.times_belief_scan_only, desc="Average Frequency Belief, Scan Only"
-        )
-        self.results.eval_mos(self.confusion_matrix_belief_no_delay, desc="\nBelief, No Delay ")
-        self.results.eval_mos(
-            self.confusion_matrix_belief,
-            desc="\nBelief",
-        )
         self.results.eval_fps(self.times_belief, desc="Average Frequency Belief")

@@ -23,12 +23,10 @@ from mapmos.metrics import get_confusion_matrix
 from mapmos.odometry import Odometry
 from mapmos.utils.pipeline_results import MOSPipelineResults
 from mapmos.utils.save import KITTIWriter, PlyWriter, StubWriter
-from mapmos.utils.visualizer import MapMOSVisualizer, StubVisualizer
+from mapmos.utils.visualizer_live import MapMOSVisualizer, StubVisualizer
 from typing import Tuple
 import sys
 
-# NEW: bring in the live LiDAR source
-# from mapmos.live_m1p.lidar_new import LidarPipeline, RobosenseClientWrapper
 
 import time
 from robosense_api import RSLidarClient  # Beispiel, wie gehabt
@@ -59,9 +57,6 @@ class MapMOSPipeline:
         n_scans: int = -1,
         max_wait_s: float = 5.0,
     ):
-        # Live LiDAR
-        # self.lidar = LidarPipeline()
-        # self.lidar = RobosenseClientWrapper()
         self.max_wait_s = max_wait_s
 
         # Config & output
@@ -183,14 +178,11 @@ class MapMOSPipeline:
                 if not client.open():
                     return
                 print("✅\tLidar initialized and started.")
-
                 while not shutdown_event.is_set():
                     # ~10 Hz vom Gerät (timeout 0.1s)
                     frame = await asyncio.to_thread(client.get, timeout=0.1)
                     if frame is not None:
                         latest_ref["frame"] = frame  # billiger Referenztausch
-
-                        
                     else:
                         await asyncio.sleep(0)  # Loop responsiv halten
             except Exception as e:
@@ -273,7 +265,7 @@ class MapMOSPipeline:
                                                     pred_logits_map[map_mask_belief].reshape(-1,1)]).reshape(-1)
                         t3 = time.perf_counter()
                         self.belief.update_belief(points_stacked, logits_stacked)
-                        self.belief.get_belief(scan_points_np)
+                        self.belief.get_belief(scan_points_np)# erzeugt array (N,)
                         t4 = time.perf_counter()
                         self.times_belief.append(t4 - t0)
 
